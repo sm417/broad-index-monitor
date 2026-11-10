@@ -217,15 +217,61 @@ async function loadK(id, range) {
     axisLabel: { color: '#8c95a3', fontSize: 11 }, axisTick: { show: false }
   };
   const hasVol = d.hasVol !== false;   // 纳斯达克官网历史无成交量
+  // 均线配色沿用国内行情软件的习惯（短周期暖色、长周期冷色），避开涨红跌绿以免误读
+  const MA_STYLE = {
+    5:   { color: '#f97316', w: 1 },
+    10:  { color: '#eab308', w: 1 },
+    20:  { color: '#a855f7', w: 1.1 },
+    60:  { color: '#0891b2', w: 1.2 },
+    200: { color: '#2563eb', w: 1.5 }
+  };
+  const periods = d.maPeriods || [60, 200];
+  const maSeries = periods.map(p => {
+    const st = MA_STYLE[p] || { color: '#94a3b8', w: 1 };
+    return {
+      name: 'MA' + p, type: 'line', data: (d.ma || {})['ma' + p] || [],
+      symbol: 'none', smooth: true, connectNulls: false,
+      // 图例色块取的是 series 的 itemStyle.color，必须显式给，否则会回落成 ECharts 默认调色板
+      itemStyle: { color: st.color },
+      lineStyle: { width: st.w, color: st.color },
+      emphasis: { focus: 'series' }
+    };
+  });
   chartK.setOption({
     animation: false,
+    legend: {
+      data: maSeries.map(s => s.name), left: 52, top: 0, itemWidth: 14, itemHeight: 2, itemGap: 12,
+      icon: 'roundRect', textStyle: { color: '#6b7280', fontSize: 11 }, inactiveColor: '#c9cdd6'
+    },
     grid: hasVol
-      ? [{ left: 52, right: 16, top: 18, height: '62%' }, { left: 52, right: 16, top: '80%', height: '12%' }]
-      : [{ left: 52, right: 16, top: 18, bottom: 46 }],
+      ? [{ left: 52, right: 16, top: 34, height: '58%' }, { left: 52, right: 16, top: '78%', height: '12%' }]
+      : [{ left: 52, right: 16, top: 34, bottom: 46 }],
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'cross' },
       backgroundColor: 'rgba(255,255,255,.96)', borderColor: '#e6e9ef',
-      textStyle: { color: '#14181f', fontSize: 12 }
+      textStyle: { color: '#14181f', fontSize: 12 },
+      formatter: (ps) => {
+        if (!ps || !ps.length) return '';
+        let s = `<div style="font-size:11px;color:#8c95a3;margin-bottom:4px">${ps[0].axisValue}</div>`;
+        ps.forEach(p => {
+          let txt;
+          if (p.seriesType === 'candlestick') {
+            const v = p.value.length > 4 ? p.value.slice(1) : p.value;   // [o,c,l,h]
+            const up = v[1] >= v[0];
+            txt = `开 ${nf(v[0])} 高 ${nf(v[3])} 低 ${nf(v[2])} 收 <b class="${up ? 'up' : 'down'}">${nf(v[1])}</b>`;
+          } else if (p.seriesName === '成交额') {
+            const v = p.value || 0;
+            txt = v >= 1e12 ? (v / 1e12).toFixed(2) + '万亿'
+                : v >= 1e8 ? (v / 1e8).toFixed(1) + '亿'
+                : v >= 1e4 ? (v / 1e4).toFixed(0) + '万' : String(v);
+          } else {
+            txt = p.value == null ? '—' : nf(p.value);
+          }
+          s += `<div style="display:flex;justify-content:space-between;gap:18px;font-size:12px;line-height:1.75">
+                  <span>${p.marker}${p.seriesName}</span><span style="font-variant-numeric:tabular-nums">${txt}</span></div>`;
+        });
+        return s;
+      }
     },
     xAxis: hasVol ? [axis, Object.assign({}, axis, { gridIndex: 1, axisLabel: { show: false } })] : [axis],
     yAxis: hasVol ? [
@@ -244,12 +290,8 @@ async function loadK(id, range) {
                  handleStyle: { color: '#1f5eff' }, textStyle: { color: '#8c95a3', fontSize: 10 } }],
     series: [
       { name: 'K', type: 'candlestick', data: d.k,
-        itemStyle: { color: '#d92d20', color0: '#0d9f6e', borderColor: '#d92d20', borderColor0: '#0d9f6e' } },
-      { name: 'MA60', type: 'line', data: d.ma60, symbol: 'none', smooth: true,
-        lineStyle: { width: 1, color: '#f59e0b' } },
-      { name: 'MA200', type: 'line', data: d.ma200, symbol: 'none', smooth: true,
-        lineStyle: { width: 1.2, color: '#3b82f6' } }
-    ].concat(hasVol ? [
+        itemStyle: { color: '#d92d20', color0: '#0d9f6e', borderColor: '#d92d20', borderColor0: '#0d9f6e' } }
+    ].concat(maSeries).concat(hasVol ? [
       { name: '成交额', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: d.vol,
         itemStyle: { color: 'rgba(31,94,255,.18)' } }
     ] : [])

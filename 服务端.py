@@ -392,26 +392,38 @@ def backtest(ix, window=1250, base=1000, step=21):
     )
 
 
+MA_PERIODS = (5, 10, 20, 60, 200)
+
+
 def build_kline(ix, rng="5y"):
     allrows = fetch_kline_ix(ix)
     n = {"1m": 21, "3m": 63, "6m": 126, "1y": 250,
          "3y": 750, "5y": 1250, "10y": 2500}.get(rng, 0)
-    # 均线在全历史上滚动计算后再切片，否则短区间里 MA200 会整条为空
+    # 均线在全历史上滚动计算后再切片，否则短区间里 MA200 会整条为空。
+    # 用前缀和，任意周期都是 O(n)，不必每个周期各扫一遍。
     closes_all = [r["c"] for r in allrows]
-    ma60, ma200 = [], []
-    for i in range(len(closes_all)):
-        ma60.append(round(sum(closes_all[max(0, i - 59): i + 1]) / len(closes_all[max(0, i - 59): i + 1]), 2) if i >= 59 else None)
-        ma200.append(round(sum(closes_all[max(0, i - 199): i + 1]) / len(closes_all[max(0, i - 199): i + 1]), 2) if i >= 199 else None)
-    rows, m60, m200 = allrows, ma60, ma200
+    pre = [0.0]
+    for c in closes_all:
+        pre.append(pre[-1] + c)
+    mas = {}
+    for p in MA_PERIODS:
+        arr = [None] * len(closes_all)
+        for i in range(p - 1, len(closes_all)):
+            arr[i] = round((pre[i + 1] - pre[i + 1 - p]) / p, 2)
+        mas["ma%d" % p] = arr
+    rows = allrows
     if n and len(allrows) > n:
-        rows, m60, m200 = allrows[-n:], ma60[-n:], ma200[-n:]
+        rows = allrows[-n:]
+        mas = {k: v[-n:] for k, v in mas.items()}
     vol = [r["v"] for r in rows]
-    return dict(id=ix["id"], name=ix["name"],
-                dates=[r["d"] for r in rows],
-                k=[[r["o"], r["c"], r["l"], r["h"]] for r in rows],
-                ma60=m60, ma200=m200,
-                vol=vol, hasVol=bool(vol) and all(v for v in vol),
-                since=rows[0]["d"], bars=len(rows))
+    out = dict(id=ix["id"], name=ix["name"],
+               dates=[r["d"] for r in rows],
+               k=[[r["o"], r["c"], r["l"], r["h"]] for r in rows],
+               vol=vol, hasVol=bool(vol) and all(v for v in vol),
+               since=rows[0]["d"], bars=len(rows),
+               ma={k: v for k, v in mas.items()}, maPeriods=list(MA_PERIODS))
+    out.update(mas)          # 兼容旧的 ma60 / ma200 字段
+    return out
 
 
 # ---------------------------------------------------------------- HTTP
