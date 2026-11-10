@@ -30,24 +30,30 @@ UA_EM = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53
 UA_DJ = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
          "Referer": "https://danjuanfunds.com/"}
+UA_NQ = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+         "Accept": "application/json, text/plain, */*",
+         "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
 
 # ---------------------------------------------------------------- 监控标的
 INDICES = [
     dict(id="hs300",  name="沪深300",    code="000300", secid="1.000300",  dj="SH000300", market="A股", note=""),
     dict(id="zz500",  name="中证500",    code="000905", secid="1.000905",  dj="SH000905", market="A股", note=""),
     dict(id="zz1000", name="中证1000",   code="000852", secid="1.000852",  dj="SH000852", market="A股", note=""),
-    dict(id="cyb50",  name="创业板50",   code="399673", secid="0.399673",  dj=None,       market="A股", note=""),
-    dict(id="kc50",   name="科创50",     code="000688", secid="1.000688",  dj="SH000688", market="A股", note=""),
+    dict(id="cyb50",  name="创业板50",   code="399673", secid="0.399673",  dj=None,       market="A股", note="2014-06 指数发布"),
+    dict(id="kc50",   name="科创50",     code="000688", secid="1.000688",  dj="SH000688", market="A股", note="2020-07 发布，此前为基日回溯"),
     dict(id="a500",   name="中证A500",   code="000510", secid="1.000510",  dj=None,       market="A股", note="2024年9月发布，此前为回溯数据"),
     dict(id="sz50",   name="上证50",     code="000016", secid="1.000016",  dj="SH000016", market="A股", note=""),
     dict(id="spx",    name="标普500",    code="SPX",    secid="100.SPX",   dj=None,       market="美股", note=""),
-    dict(id="ndx",    name="纳斯达克100", code="NDX",   secid="100.NDX100", dj="NDX",     market="美股", note="行情自2019-04起"),
-    dict(id="hstech", name="恒生科技",   code="HSTECH", secid="124.HSTECH", dj="HKHSTECH", market="港股", note="2014-12基日"),
+    dict(id="ndx",    name="纳斯达克100", code="NDX",   secid="100.NDX100", dj="NDX",     market="美股",
+         note="长历史＝纳斯达克官网 + 东财拼接（无成交额）", long="nasdaq"),
+    dict(id="hstech", name="恒生科技",   code="HSTECH", secid="124.HSTECH", dj="HKHSTECH", market="港股", note="2014-12 基日"),
 ]
 
 KLINE_TTL = 120      # 行情缓存 2 分钟
 VAL_TTL = 1800       # 估值缓存 30 分钟
-_cache = {"kline": {}, "val": {}, "t": {}}
+HIST_TTL = 21600     # 长历史（纳斯达克官网）缓存 6 小时
+_cache = {"kline": {}, "val": {}, "t": {}, "hist": {}}
 _lock = threading.Lock()
 POOL = ThreadPoolExecutor(max_workers=8)
 
@@ -84,6 +90,59 @@ def fetch_kline(secid):
                          l=float(p[4]), v=float(p[5]), a=float(p[6])))
     with _lock:
         _cache["kline"][key] = (now, rows)
+    return rows
+
+
+def fetch_nasdaq_hist(sym):
+    """纳斯达克官网指数日线：NDX 自 1996-06-06 起，无成交量字段。
+    该接口只给到最近一个已收盘交易日，实时尾巴由东财补齐。"""
+    key = "nq:" + sym
+    now = time.time()
+    with _lock:
+        hit = _cache["hist"].get(key)
+        if hit and now - hit[0] < HIST_TTL:
+            return hit[1]
+    end = date.fromordinal(date.today().toordinal() + 3).isoformat()
+    url = ("https://api.nasdaq.com/api/quote/%s/historical?assetclass=index"
+           "&fromdate=1985-01-01&limit=20000&todate=%s" % (sym, end))
+    d = json.loads(_get(url, UA_NQ, timeout=40))
+    rows = []
+    for x in d.get("data", {}).get("tradesTable", {}).get("rows") or []:
+        try:
+            mm, dd, yy = x["date"].split("/")
+            num = lambda s: float(str(s).replace("$", "").replace(",", ""))
+            rows.append(dict(d="%s-%s-%s" % (yy, mm, dd),
+                             o=num(x["open"]), c=num(x["close"]),
+                             h=num(x["high"]), l=num(x["low"]), v=0.0, a=0.0))
+        except Exception:
+            continue
+    rows.reverse()
+    with _lock:
+        _cache["hist"][key] = (now, rows)
+    return rows
+
+
+def fetch_kline_ix(ix):
+    """按标的取日线：默认东财；带 long="nasdaq" 的先用官网长历史打底，再用东财覆盖近端（含盘中）。"""
+    rows = fetch_kline(ix["secid"])
+    if not ix.get("long") or not rows:
+        return rows
+    key = "merge:" + ix["id"]
+    now = time.time()
+    with _lock:
+        hit = _cache["hist"].get(key)
+        if hit and now - hit[0] < KLINE_TTL:
+            return hit[1]
+    try:
+        old = fetch_nasdaq_hist(ix["code"])
+    except Exception as e:
+        sys.stderr.write("[warn] %s 长历史获取失败，退回东财：%s\n" % (ix["name"], e))
+        old = []
+    if old:
+        first = rows[0]["d"]
+        rows = [r for r in old if r["d"] < first] + rows
+    with _lock:
+        _cache["hist"][key] = (now, rows)
     return rows
 
 
@@ -191,7 +250,7 @@ def build_snapshot(window=1250, w_val=0.30):
     """window: 交易日数量，0=全历史；w_val: 估值权重"""
     def one(ix):
         try:
-            rows = fetch_kline(ix["secid"])
+            rows = fetch_kline_ix(ix)
         except Exception as e:
             return dict(id=ix["id"], name=ix["name"], error=str(e))
         if not rows:
@@ -271,7 +330,7 @@ def xirr(flows):
 
 
 def backtest(ix, window=1250, base=1000, step=21):
-    rows = fetch_kline(ix["secid"])
+    rows = fetch_kline_ix(ix)
     if len(rows) < 300:
         return dict(error="历史不足")
     dates = [datetime.strptime(r["d"], "%Y-%m-%d").date() for r in rows]
@@ -334,20 +393,25 @@ def backtest(ix, window=1250, base=1000, step=21):
 
 
 def build_kline(ix, rng="5y"):
-    rows = fetch_kline(ix["secid"])
-    n = {"1y": 250, "3y": 750, "5y": 1250, "10y": 2500}.get(rng, 0)
-    if n and len(rows) > n:
-        rows = rows[-n:]
-    closes = [r["c"] for r in rows]
+    allrows = fetch_kline_ix(ix)
+    n = {"1m": 21, "3m": 63, "6m": 126, "1y": 250,
+         "3y": 750, "5y": 1250, "10y": 2500}.get(rng, 0)
+    # 均线在全历史上滚动计算后再切片，否则短区间里 MA200 会整条为空
+    closes_all = [r["c"] for r in allrows]
     ma60, ma200 = [], []
-    for i in range(len(closes)):
-        ma60.append(round(sum(closes[max(0, i - 59): i + 1]) / len(closes[max(0, i - 59): i + 1]), 2) if i >= 59 else None)
-        ma200.append(round(sum(closes[max(0, i - 199): i + 1]) / len(closes[max(0, i - 199): i + 1]), 2) if i >= 199 else None)
+    for i in range(len(closes_all)):
+        ma60.append(round(sum(closes_all[max(0, i - 59): i + 1]) / len(closes_all[max(0, i - 59): i + 1]), 2) if i >= 59 else None)
+        ma200.append(round(sum(closes_all[max(0, i - 199): i + 1]) / len(closes_all[max(0, i - 199): i + 1]), 2) if i >= 199 else None)
+    rows, m60, m200 = allrows, ma60, ma200
+    if n and len(allrows) > n:
+        rows, m60, m200 = allrows[-n:], ma60[-n:], ma200[-n:]
+    vol = [r["v"] for r in rows]
     return dict(id=ix["id"], name=ix["name"],
                 dates=[r["d"] for r in rows],
                 k=[[r["o"], r["c"], r["l"], r["h"]] for r in rows],
-                ma60=ma60, ma200=ma200,
-                vol=[r["v"] for r in rows])
+                ma60=m60, ma200=m200,
+                vol=vol, hasVol=bool(vol) and all(v for v in vol),
+                since=rows[0]["d"], bars=len(rows))
 
 
 # ---------------------------------------------------------------- HTTP

@@ -7,7 +7,7 @@ const S = Object.assign(
   JSON.parse(localStorage.getItem('wbcfg') || '{}')
 );
 if (S.v !== 2) { S.v = 2; S.range = '5y'; }
-if (!['1y', '3y', '5y', '10y', 'all'].includes(S.range)) S.range = '5y';
+if (!['1m', '3m', '6m', '1y', '3y', '5y', '10y', 'all'].includes(S.range)) S.range = '5y';
 const save = () => localStorage.setItem('wbcfg', JSON.stringify(S));
 
 let DATA = null;
@@ -199,7 +199,8 @@ function renderRangeStats(d) {
     ${cagr == null ? '' : `<span>年化 <b class="${cls(cagr)}">${pct(cagr, 2)}</b></span>`}
     <span>区间最高 <b>${nf(hi)}</b></span>
     <span>区间最低 <b>${nf(lo)}</b></span>
-    <span class="dim">${d.dates[0]} → ${d.dates[d.dates.length - 1]}（${k.length} 个交易日）</span>`;
+    <span class="dim">${d.dates[0]} → ${d.dates[d.dates.length - 1]}（${k.length} 个交易日）</span>
+    ${d.hasVol === false ? '<span class="dim">· 该区间含纳斯达克官网历史（无成交量），已隐藏成交额</span>' : ''}`;
 }
 
 async function loadK(id, range) {
@@ -215,23 +216,29 @@ async function loadK(id, range) {
     axisLine: { lineStyle: { color: '#e6e9ef' } },
     axisLabel: { color: '#8c95a3', fontSize: 11 }, axisTick: { show: false }
   };
+  const hasVol = d.hasVol !== false;   // 纳斯达克官网历史无成交量
   chartK.setOption({
     animation: false,
-    grid: [{ left: 52, right: 16, top: 18, height: '62%' }, { left: 52, right: 16, top: '80%', height: '12%' }],
+    grid: hasVol
+      ? [{ left: 52, right: 16, top: 18, height: '62%' }, { left: 52, right: 16, top: '80%', height: '12%' }]
+      : [{ left: 52, right: 16, top: 18, bottom: 46 }],
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'cross' },
       backgroundColor: 'rgba(255,255,255,.96)', borderColor: '#e6e9ef',
       textStyle: { color: '#14181f', fontSize: 12 }
     },
-    xAxis: [axis, Object.assign({}, axis, { gridIndex: 1, axisLabel: { show: false } })],
-    yAxis: [
+    xAxis: hasVol ? [axis, Object.assign({}, axis, { gridIndex: 1, axisLabel: { show: false } })] : [axis],
+    yAxis: hasVol ? [
       { scale: true, position: 'left', splitLine: { lineStyle: { color: '#f1f3f8' } },
         axisLabel: { color: '#8c95a3', fontSize: 11 }, axisLine: { show: false } },
       { scale: true, gridIndex: 1, splitNumber: 1, axisLabel: { show: false },
         axisLine: { show: false }, splitLine: { show: false } }
+    ] : [
+      { scale: true, position: 'left', splitLine: { lineStyle: { color: '#f1f3f8' } },
+        axisLabel: { color: '#8c95a3', fontSize: 11 }, axisLine: { show: false } }
     ],
-    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-               { type: 'slider', xAxisIndex: [0, 1], bottom: 4, height: 16, start: 0, end: 100,
+    dataZoom: [{ type: 'inside', xAxisIndex: hasVol ? [0, 1] : [0], start: 0, end: 100 },
+               { type: 'slider', xAxisIndex: hasVol ? [0, 1] : [0], bottom: 4, height: 16, start: 0, end: 100,
                  borderColor: 'transparent',
                  backgroundColor: '#f4f6fa', fillerColor: 'rgba(31,94,255,.08)',
                  handleStyle: { color: '#1f5eff' }, textStyle: { color: '#8c95a3', fontSize: 10 } }],
@@ -241,10 +248,11 @@ async function loadK(id, range) {
       { name: 'MA60', type: 'line', data: d.ma60, symbol: 'none', smooth: true,
         lineStyle: { width: 1, color: '#f59e0b' } },
       { name: 'MA200', type: 'line', data: d.ma200, symbol: 'none', smooth: true,
-        lineStyle: { width: 1.2, color: '#3b82f6' } },
+        lineStyle: { width: 1.2, color: '#3b82f6' } }
+    ].concat(hasVol ? [
       { name: '成交额', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: d.vol,
         itemStyle: { color: 'rgba(31,94,255,.18)' } }
-    ]
+    ] : [])
   }, true);
 }
 
