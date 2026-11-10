@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宽基定投温度监控</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>宽基定投温度监控</h1>
+    <span class="sub">位置 × 估值 → 本期该投多少</span>
+  </div>
+  <div class="tools">
+    <span class="stamp" id="stamp">正在读取…</span>
+    <button class="btn ghost" id="btnRefresh" title="立即刷新">刷新</button>
+    <button class="btn ghost" id="btnSettings" title="参数">参数</button>
+  </div>
+</header>
+
+<section class="summary">
+  <div class="stat"><label>加码 / 增额</label><b id="sAdd">–</b><i>倍率 ≥ 1.5×</i></div>
+  <div class="stat"><label>常规</label><b id="sHold">–</b><i>1.0×</i></div>
+  <div class="stat"><label>减额 / 缩量</label><b id="sCut">–</b><i>倍率 ≤ 0.5×</i></div>
+  <div class="stat"><label>平均温度</label><b id="sAvg">–</b><i>0 极冷 · 100 过热</i></div>
+  <div class="scale">
+    <div class="scale-bar"></div>
+    <div class="scale-txt"><span>0 极冷 · 加码</span><span>50 中性</span><span>100 过热 · 缩量</span></div>
+  </div>
+</section>
+
+<main class="grid" id="grid"></main>
+
+<footer class="foot">
+  <p><b>温度分</b>＝价格分位 30% ＋ 距历史高点回撤 25% ＋ 200日线偏离 20% ＋ RSI 15% ＋ 60日动量 10%；有 PE/PB 分位的标的再按估值权重（默认 30%）合成。分数越高＝越接近历史低位。</p>
+  <p><b>数据</b>：日线行情 东方财富（含当日盘中），PE/PB 分位 蛋卷基金（快照，30 分钟缓存）。行情每逢整点间自动刷新，页面每 60 秒轮询一次。</p>
+  <p class="warn">本页面为纪律参考工具，不构成投资建议。分位与回测均基于历史价格，历史不代表未来；跨境标的还需考虑汇率、QDII 溢价与额度。</p>
+</footer>
+
+<!-- 详情 -->
+<div class="modal" id="modal" aria-hidden="true">
+  <div class="modal-mask" data-close></div>
+  <div class="sheet">
+    <div class="sheet-hd">
+      <div>
+        <h2 id="dName">—</h2>
+        <p id="dMeta" class="meta">—</p>
+      </div>
+      <div class="hd-right">
+        <div class="d-price"><b id="dPrice">—</b><span id="dChg">—</span></div>
+        <button class="btn ghost icon" data-close>✕</button>
+      </div>
+    </div>
+
+    <div class="d-verdict" id="dVerdict"></div>
+
+    <div class="d-body">
+      <div class="panel">
+        <div class="panel-hd">
+          <h4>价格走势</h4>
+          <div class="ranges" id="ranges">
+            <button data-r="1y">1年</button><button data-r="3y">3年</button>
+            <button data-r="5y" class="on">5年</button><button data-r="10y">10年</button>
+            <button data-r="all">全部</button>
+          </div>
+        </div>
+        <div class="chart" id="chartK"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-hd"><h4>定投回测 · 按信号 vs 等额</h4><span class="hint" id="btHint"></span></div>
+        <div class="bt-cards" id="btCards"></div>
+        <div class="chart sm" id="chartBT"></div>
+      </div>
+    </div>
+
+    <div class="factors" id="dFactors"></div>
+  </div>
+</div>
+
+<!-- 参数 -->
+<div class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-mask" data-close></div>
+  <div class="drawer-panel">
+    <div class="drawer-hd"><h3>参数</h3><button class="btn ghost icon" data-close>✕</button></div>
+
+    <div class="field">
+      <label>分位窗口</label>
+      <div class="seg" id="segWindow">
+        <button data-v="750">3年</button><button data-v="1250" class="on">5年</button>
+        <button data-v="2500">10年</button><button data-v="0">全历史</button>
+      </div>
+      <p class="tip">用于算「价格分位」。窗口越短越敏感，越长越稳。</p>
+    </div>
+
+    <div class="field">
+      <label>估值权重 <b id="wValTxt">30%</b></label>
+      <input type="range" id="wVal" min="0" max="60" step="5" value="30">
+      <p class="tip">0% ＝ 纯位置策略（与回测口径一致）。无 PE/PB 数据的标的自动取纯位置分。</p>
+    </div>
+
+    <div class="field">
+      <label>每期基准金额（元）</label>
+      <input type="number" id="baseAmt" value="1000" min="100" step="100">
+      <p class="tip">回测与「本期建议投入」都按此金额 × 倍率计算。</p>
+    </div>
+
+    <div class="field">
+      <label>定投频率</label>
+      <div class="seg" id="segStep">
+        <button data-v="5">每周</button><button data-v="10">每两周</button>
+        <button data-v="21" class="on">每月</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>自动刷新</label>
+      <div class="seg" id="segAuto">
+        <button data-v="0">关闭</button><button data-v="60" class="on">60秒</button><button data-v="300">5分钟</button>
+      </div>
+    </div>
+
+    <button class="btn primary block" data-close>完成</button>
+  </div>
+</div>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
