@@ -3,7 +3,9 @@
 宽基定投温度监控 · 本地服务端
 数据源：东方财富（日线行情，含当日实时）、蛋卷基金（指数 PE/PB 历史分位）
 """
+import bisect
 import json
+import math
 import os
 import sys
 import time
@@ -48,6 +50,8 @@ INDICES = [
     dict(id="ndx",    name="纳斯达克100", code="NDX",   secid="100.NDX100", dj="NDX",     market="美股",
          note="长历史＝纳斯达克官网 + 东财拼接（无成交额）", long="nasdaq"),
     dict(id="hstech", name="恒生科技",   code="HSTECH", secid="124.HSTECH", dj="HKHSTECH", market="港股", note="2014-12 基日"),
+    dict(id="gold",   name="黄金",       code="AU9999", secid="118.AU9999", dj=None,       market="商品",
+         note="上海金交所 AU9999 现货（元/克），可用黄金 ETF 518880 跟踪；无 PE/PB，估值因子自动剔除"),
 ]
 
 KLINE_TTL = 120      # 行情缓存 2 分钟
@@ -228,6 +232,132 @@ def pos_factors(closes, i, window):
     return score, f
 
 
+# ---------------------------------------------------------------- v2 评分
+# 设计依据见 README「方法论」：
+#   1) 「价格在历史区间中的位置」对长期上行的指数有系统性偏高偏差（水平漂移），
+#      改用「相对 200 日线的偏离，在本标的历史上的分位」；
+#   2) 「贵」不用区间位置衡量，改用「价格相对 10 年对数趋势线的偏离」+ 估值分位，
+#      因为创新高本身在 6-12 个月尺度上并无负 alpha；
+#   3) 回撤按该标的自身的历史回撤分布取分位，而非绝对百分比。
+W2 = dict(tp=0.28, dd=0.18, sp=0.18, td=0.18, val=0.18)
+
+
+def trend_dev(closes, i, years=10):
+    """当前价相对「过去 N 年对数价格线性趋势」的偏离（小数），正=高于趋势线"""
+    j = max(0, i - years * 250)
+    n = i - j + 1
+    if n < 250:
+        return None
+    ys = [math.log(closes[j + k]) for k in range(n)]
+    mx = (n - 1) / 2.0
+    my = sum(ys) / n
+    sxx = sum((k - mx) ** 2 for k in range(n))
+    if sxx <= 0:
+        return None
+    b = sum((k - mx) * (y - my) for k, y in enumerate(ys)) / sxx
+    fit = my + b * ((n - 1) - mx)
+    return math.exp(ys[-1] - fit) - 1.0
+
+
+def _wild_rsi(closes):
+    n = len(closes)
+    out = [50.0] * n
+    ag = al = 0.0
+    for i in range(1, n):
+        ch = closes[i] - closes[i - 1]
+        g, l = max(ch, 0.0), max(-ch, 0.0)
+        if i <= 14:
+            ag += g / 14.0
+            al += l / 14.0
+            if i == 14:
+                out[i] = 100 - 100 / (1 + (ag / al if al else 999))
+        else:
+            ag = (ag * 13 + g) / 14
+            al = (al * 13 + l) / 14
+            out[i] = 100 - 100 / (1 + (ag / al if al else 999))
+    return out
+
+
+class ScoreCtx:
+    """一次预计算 + 前缀分位；advance(i) 之后 score(i) 只用 i 及之前的数据"""
+
+    def __init__(self, closes):
+        self.c = closes
+        n = self.n = len(closes)
+        self.ma200 = [None] * n
+        self.ma20 = [None] * n
+        self.dev = [None] * n
+        self.dd = [0.0] * n
+        self.dd20 = [0.0] * n
+        self._td = {}
+        ps = [0.0]
+        for x in closes:
+            ps.append(ps[-1] + x)
+        peak = closes[0]
+        for i in range(n):
+            peak = max(peak, closes[i])
+            self.dd[i] = closes[i] / peak - 1.0
+            if i >= 19:
+                self.ma20[i] = (ps[i + 1] - ps[i - 19]) / 20.0
+                self.dd20[i] = closes[i] / max(closes[i - 19:i + 1]) - 1.0
+            if i >= 199:
+                self.ma200[i] = (ps[i + 1] - ps[i - 199]) / 200.0
+                self.dev[i] = closes[i] / self.ma200[i] - 1.0
+        self.rsi = _wild_rsi(closes)
+        self.ranks = {k: [] for k in ("dev", "dd", "dd20", "td")}
+        self._upto = -1
+
+    def td_at(self, i):
+        if i not in self._td:
+            self._td[i] = trend_dev(self.c, i)
+        return self._td[i]
+
+    def advance(self, i):
+        for k in range(self._upto + 1, i + 1):
+            for key, arr in (("dev", self.dev), ("dd", self.dd), ("dd20", self.dd20)):
+                v = arr[k]
+                if v is not None:
+                    bisect.insort(self.ranks[key], v)
+            # 10 年趋势每 21 个交易日算一次入池（OLS 是 O(n)，不能逐日算）
+            if k >= 250 and k % 21 == 0:
+                v = self.td_at(k)
+                if v is not None:
+                    bisect.insort(self.ranks["td"], v)
+        self._upto = max(self._upto, i)
+
+    def pct(self, key, v):
+        a = self.ranks[key]
+        return 0.5 if not a or v is None else bisect.bisect_left(a, v) / len(a)
+
+    def score(self, i, val_score=None, val_pct=None):
+        s_tp = 100 - self.pct("dev", self.dev[i]) * 100
+        s_dd = 100 - self.pct("dd", self.dd[i]) * 100
+        s_sp = 0.5 * (100 - self.pct("dd20", self.dd20[i]) * 100) + \
+            0.5 * clamp((70 - self.rsi[i]) / 40 * 100)
+        td = self.td_at(i)
+        s_td = 100 - (self.pct("td", td) * 100 if td is not None else 50)
+        parts = dict(
+            tp=dict(v=self.dev[i] or 0.0, s=s_tp, w=W2["tp"], label="趋势位置", fmt="pct"),
+            dd=dict(v=self.dd[i], s=s_dd, w=W2["dd"], label="回撤分位", fmt="pct"),
+            sp=dict(v=self.rsi[i], s=s_sp, w=W2["sp"], label="短期超卖", fmt="num"),
+            td=dict(v=td if td is not None else 0.0,
+                    s=s_td, w=W2["td"], label="距长期趋势", fmt="pct"),
+        )
+        if val_score is not None:
+            parts["val"] = dict(v=val_pct if val_pct is not None else 0.5,
+                                s=val_score, w=W2["val"], label="估值分位", fmt="pct0")
+        tot = sum(p["s"] * p["w"] for p in parts.values()) / sum(p["w"] for p in parts.values())
+        # 展示用权重归一到 1（缺 PE/PB 的品种只剩四项，原权重合计 0.82）
+        wsum = sum(p["w"] for p in parts.values())
+        for p in parts.values():
+            p["w"] = p["w"] / wsum
+        return tot, parts
+
+
+# 模型版本：v2 为默认；v1 保留用于对照
+MODELS = ("v2", "v1")
+
+
 # 倍率档位：一律按「温度」（0 冷 = 便宜，100 热 = 贵）切分，前后端同一口径
 BANDS = [(80, 0.3, "缩量", "hot"), (65, 0.5, "减额", "warm"),
          (40, 1.0, "常规", "mid"), (25, 1.5, "增额", "cool"), (-1, 2.0, "加码", "ice")]
@@ -246,8 +376,8 @@ def band_of(score):
 
 
 # ---------------------------------------------------------------- 快照
-def build_snapshot(window=1250, w_val=0.30):
-    """window: 交易日数量，0=全历史；w_val: 估值权重"""
+def build_snapshot(window=1250, w_val=0.30, model="v2"):
+    """window: 交易日数量，0=全历史；w_val: 估值权重（v1 用）；model: v2/v1"""
     def one(ix):
         try:
             rows = fetch_kline_ix(ix)
@@ -258,32 +388,50 @@ def build_snapshot(window=1250, w_val=0.30):
         closes = [r["c"] for r in rows]
         last, prev = closes[-1], closes[-2] if len(closes) > 1 else closes[-1]
         i = len(closes) - 1
-        p_score, f = pos_factors(closes, i, window)
         val = fetch_val(ix["dj"])
 
-        v_score = None
+        v_score, v_pct = None, None
         if val and val.get("pePct") is not None and val.get("pbPct") is not None:
-            v_score = clamp(100 - (val["pePct"] * 0.5 + val["pbPct"] * 0.5) * 100)
+            v_pct = val["pePct"] * 0.5 + val["pbPct"] * 0.5
+            v_score = clamp(100 - v_pct * 100)
 
-        if v_score is not None and w_val > 0:
-            total = p_score * (1 - w_val) + v_score * w_val
+        dev10 = trend_dev(closes, i)
+        if model == "v1":
+            p_score, f = pos_factors(closes, i, window)
+            if v_score is not None and w_val > 0:
+                total = p_score * (1 - w_val) + v_score * w_val
+            else:
+                total = p_score
+            factors = {k: dict(v=x["v"], s=round(x["s"], 1), w=x["w"],
+                               label=x["label"], fmt="pct" if k in ("pct", "dd", "ma", "mom") else "num")
+                       for k, x in f.items()}
+            if v_score is not None:
+                factors["val"] = dict(v=v_pct, s=round(v_score, 1), w=w_val,
+                                      label="估值分位", fmt="pct")
         else:
-            total = p_score
+            ctx = ScoreCtx(closes)
+            ctx.advance(i)
+            total, parts = ctx.score(i, v_score, v_pct)
+            factors = {k: dict(v=x["v"], s=round(x["s"], 1), w=x["w"],
+                               label=x["label"], fmt=x["fmt"]) for k, x in parts.items()}
         band = band_of(total)
 
         hi52 = max(closes[-250:])
         lo52 = min(closes[-250:])
+        ma200 = sum(closes[-200:]) / len(closes[-200:]) if len(closes) >= 200 else None
         return dict(
             id=ix["id"], name=ix["name"], code=ix["code"], market=ix["market"], note=ix["note"],
             price=last, chg=last - prev, chgPct=(last / prev - 1) * 100 if prev else 0,
             date=rows[-1]["d"], since=rows[0]["d"], bars=len(rows),
-            score=round(total, 1), posScore=round(p_score, 1),
+            score=round(total, 1), posScore=round(total, 1),
             temp=round(100 - total, 1),
             valScore=None if v_score is None else round(v_score, 1),
             mult=band["mult"], label=band["label"], tone=band["tone"],
-            factors={k: dict(v=x["v"], s=round(x["s"], 1), w=x["w"], label=x["label"])
-                     for k, x in f.items()},
-            pctWindow=window,
+            factors=factors,
+            model=model,
+            ma200=None if ma200 is None else round(ma200, 2),
+            dev200=None if ma200 is None else round((last / ma200 - 1) * 100, 2),
+            dev10=None if dev10 is None else round(dev10 * 100, 2),
             hi52=hi52, lo52=lo52, pos52=(last - lo52) / (hi52 - lo52) if hi52 > lo52 else 0.5,
             val=val, hasVal=v_score is not None,
             spark=[round(x, 2) for x in closes[-60:]],
@@ -294,7 +442,7 @@ def build_snapshot(window=1250, w_val=0.30):
     ok = [x for x in out if "error" not in x]
     return dict(
         updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        window=window, wVal=w_val,
+        window=window, wVal=w_val, model=model,
         indices=out,
         stats=dict(n=len(ok),
                    add=len([x for x in ok if x["mult"] > 1]),
@@ -329,31 +477,49 @@ def xirr(flows):
         return None
 
 
-def backtest(ix, window=1250, base=1000, step=21):
+def backtest(ix, window=1250, base=1000, step=21, model="v2"):
+    """固定预算回测：每期总预算 = base × 2.0，按倍率投出，余额留现金（不计息）。
+    这样「牛市少投」不再被奖励——少投的钱只能在账上躺着，与真实定投一致。"""
     rows = fetch_kline_ix(ix)
     if len(rows) < 300:
         return dict(error="历史不足")
     dates = [datetime.strptime(r["d"], "%Y-%m-%d").date() for r in rows]
     closes = [r["c"] for r in rows]
+    budget = base * 2.0
+
+    val = fetch_val(ix["dj"])
+    v_score, v_pct = None, None
+    if val and val.get("pePct") is not None and val.get("pbPct") is not None:
+        v_pct = val["pePct"] * 0.5 + val["pbPct"] * 0.5
+        v_score = clamp(100 - v_pct * 100)
+
+    ctx = ScoreCtx(closes) if model != "v1" else None
 
     start = 250
     t_dates, t_mult, inv_sig, inv_eq, val_sig, val_eq = [], [], [], [], [], []
     units_s, units_e = 0.0, 0.0
     cum_s, cum_e = 0.0, 0.0
+    cash_s, cash_e = 0.0, 0.0
     flows_s, flows_e = [], []
 
     i = start
     while i < len(closes):
-        score, _ = pos_factors(closes, i, window or 0)
+        if ctx is not None:
+            ctx.advance(i)
+            score, _ = ctx.score(i, v_score, v_pct)
+        else:
+            score, _ = pos_factors(closes, i, window or 0)
         mult = band_of(score)["mult"]
         px = closes[i]
         a_s, a_e = base * mult, base
         cum_s += a_s
         cum_e += a_e
+        cash_s += budget - a_s
+        cash_e += budget - a_e
         units_s += a_s / px
         units_e += a_e / px
-        flows_s.append((dates[i], -a_s))
-        flows_e.append((dates[i], -a_e))
+        flows_s.append((dates[i], -budget))
+        flows_e.append((dates[i], -budget))
         t_dates.append(rows[i]["d"])
         t_mult.append(mult)
         inv_sig.append(round(cum_s, 2))
@@ -365,30 +531,37 @@ def backtest(ix, window=1250, base=1000, step=21):
     if not t_dates:
         return dict(error="样本不足")
 
-    flows_s.append((dates[-1], units_s * closes[-1]))
-    flows_e.append((dates[-1], units_e * closes[-1]))
-    m_s = dict(
-        invested=round(cum_s, 2), value=round(units_s * closes[-1], 2),
-        profitPct=round((units_s * closes[-1] / cum_s - 1) * 100, 2),
-        xirr=None, avgCost=round(cum_s / units_s, 2), multAvg=round(cum_s / (base * len(t_dates)), 2),
-        maxFloatLoss=round(min(v / inv - 1 for v, inv in zip(val_sig, inv_sig)) * 100, 2),
-    )
-    m_e = dict(
-        invested=round(cum_e, 2), value=round(units_e * closes[-1], 2),
-        profitPct=round((units_e * closes[-1] / cum_e - 1) * 100, 2),
-        avgCost=round(cum_e / units_e, 2),
-        maxFloatLoss=round(min(v / inv - 1 for v, inv in zip(val_eq, inv_eq)) * 100, 2),
-    )
+    mv_s = units_s * closes[-1]
+    mv_e = units_e * closes[-1]
+    flows_s.append((dates[-1], mv_s + cash_s))
+    flows_e.append((dates[-1], mv_e + cash_e))
+    total_budget = budget * len(t_dates)
+
+    def pack(units, cash, cum, vals, invs):
+        mv = units * closes[-1]
+        return dict(
+            invested=round(cum, 2), value=round(mv, 2),
+            cash=round(cash, 2), wealth=round(mv + cash, 2),
+            budget=round(total_budget, 2),
+            profitPct=round((mv / cum - 1) * 100, 2),
+            wealthPct=round(((mv + cash) / total_budget - 1) * 100, 2),
+            avgCost=round(cum / units, 2),
+            maxFloatLoss=round(min(v / inv - 1 for v, inv in zip(vals, invs)) * 100, 2),
+        )
+
+    m_s = pack(units_s, cash_s, cum_s, val_sig, inv_sig)
+    m_e = pack(units_e, cash_e, cum_e, val_eq, inv_eq)
+    m_s["multAvg"] = round(cum_s / (base * len(t_dates)), 2)
+    m_e["multAvg"] = 1.0
     r = xirr(flows_s)
     m_s["xirr"] = None if r is None else round(r * 100, 2)
     r2 = xirr(flows_e)
     m_e["xirr"] = None if r2 is None else round(r2 * 100, 2)
-    m_e["multAvg"] = 1.0
     return dict(
         dates=t_dates, mult=t_mult,
         invested=inv_sig, value=val_sig, investedEq=inv_eq, valueEq=val_eq,
         sig=m_s, eq=m_e, times=len(t_dates),
-        window=window, base=base, step=step,
+        window=window, base=base, step=step, model=model, budget=round(total_budget, 2),
     )
 
 
@@ -452,7 +625,8 @@ class Handler(SimpleHTTPRequestHandler):
             if u.path == "/api/snapshot":
                 w = int(q.get("window", 1250))
                 wv = float(q.get("wval", 0.30))
-                return self._json(build_snapshot(w, wv))
+                md = q.get("model", "v2")
+                return self._json(build_snapshot(w, wv, md if md in MODELS else "v2"))
             if u.path == "/api/kline":
                 ix = next((x for x in INDICES if x["id"] == q.get("id")), None)
                 if not ix:
@@ -465,7 +639,8 @@ class Handler(SimpleHTTPRequestHandler):
                 w = int(q.get("window", 1250))
                 base = float(q.get("base", 1000))
                 step = int(q.get("step", 21))
-                return self._json(backtest(ix, w, base, step))
+                md = q.get("model", "v2")
+                return self._json(backtest(ix, w, base, step, md if md in MODELS else "v2"))
             if u.path == "/api/meta":
                 return self._json(dict(indices=[{k: x[k] for k in ("id", "name", "code", "market", "note")}
                                                 for x in INDICES]))

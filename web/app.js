@@ -3,10 +3,13 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const S = Object.assign(
-  { v: 2, window: 1250, wval: 0.3, base: 1000, step: 21, auto: 60, range: '5y' },
+  { v: 3, model: 'v2', window: 1250, wval: 0.3, base: 1000, step: 21, auto: 60, range: '5y' },
   JSON.parse(localStorage.getItem('wbcfg') || '{}')
 );
-if (S.v !== 2) { S.v = 2; S.range = '5y'; }
+if (S.v !== 3) { S.v = 3; S.range = '5y'; }
+if (!['v1', 'v2'].includes(S.model)) S.model = 'v2';
+const _qm = new URLSearchParams(location.search).get('model');
+if (['v1', 'v2'].includes(_qm)) S.model = _qm;   // 允许用 ?model=v1 直接对照
 if (!['1m', '3m', '6m', '1y', '3y', '5y', '10y', 'all'].includes(S.range)) S.range = '5y';
 const save = () => localStorage.setItem('wbcfg', JSON.stringify(S));
 
@@ -35,7 +38,7 @@ const cls = n => n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
 async function load(force) {
   $('#stamp').textContent = '正在更新…';
   try {
-    const r = await fetch(`/api/snapshot?window=${S.window}&wval=${S.wval}${force ? '&_=' + Date.now() : ''}`);
+    const r = await fetch(`/api/snapshot?window=${S.window}&wval=${S.wval}&model=${S.model}${force ? '&_=' + Date.now() : ''}`);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     DATA = await r.json();
     renderSummary(DATA);
@@ -91,10 +94,10 @@ function renderGrid(d) {
         <em>本期 <b>¥${wan(S.base * x.mult)}</b></em>
       </div>
       <ul class="metrics">
-        <li><span>PE 分位</span><b class="${x.hasVal ? '' : 'na'}">${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : '—'}</b></li>
-        <li><span>价格分位</span><b>${(x.factors.pct.v * 100).toFixed(0)}%</b></li>
+        <li><span>${x.hasVal ? 'PE 分位' : '年内位置'}</span><b class="${x.hasVal ? '' : ''}">${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : (x.pos52 * 100).toFixed(0) + '%'}</b></li>
         <li><span>距高点</span><b>${plain(x.factors.dd.v * 100)}</b></li>
-        <li><span>距 MA200</span><b>${plain(x.factors.ma.v * 100)}</b></li>
+        <li><span>距 MA200</span><b>${plain(x.dev200)}</b></li>
+        <li><span>距 10 年趋势</span><b>${plain(x.dev10)}</b></li>
       </ul>
       ${sparkSVG(x.spark)}`;
     el.onclick = () => openDetail(x.id);
@@ -153,27 +156,16 @@ async function openDetail(id) {
 }
 
 function renderFactors(x) {
-  const order = ['pct', 'dd', 'ma', 'rsi', 'mom'];
-  const fmtv = {
-    pct: v => (v * 100).toFixed(0) + '%', dd: v => plain(v * 100),
-    ma: v => plain(v * 100), rsi: v => v.toFixed(1), mom: v => plain(v * 100)
-  };
-  let rows = order.map(k => {
+  const fmtv = { pct: v => plain(v * 100), pct0: v => (v * 100).toFixed(0) + '%', num: v => v.toFixed(1) };
+  let rows = Object.keys(x.factors).map(k => {
     const f = x.factors[k];
-    return `<tr><td>${f.label}</td><td>${fmtv[k](f.v)}</td>
+    const fn = fmtv[f.fmt] || fmtv.pct;
+    return `<tr><td>${f.label}</td><td>${fn(f.v)}</td>
       <td><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
         <div class="bar" style="width:96px"><i style="width:${f.s.toFixed(0)}%"></i></div>
         <span style="width:26px">${f.s.toFixed(0)}</span></div></td>
       <td>${(f.w * 100).toFixed(0)}%</td></tr>`;
   }).join('');
-  if (x.hasVal) {
-    rows += `<tr><td>估值</td>
-      <td>PE 分位 ${(x.val.pePct * 100).toFixed(0)}% · PB 分位 ${(x.val.pbPct * 100).toFixed(0)}%</td>
-      <td><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
-        <div class="bar" style="width:96px"><i style="width:${x.valScore.toFixed(0)}%"></i></div>
-        <span style="width:26px">${x.valScore.toFixed(0)}</span></div></td>
-      <td>${(S.wval * 100).toFixed(0)}%</td></tr>`;
-  }
   $('#dFactors').innerHTML = `<table>
     <thead><tr><th>因子</th><th>读数</th><th>位置分</th><th>权重</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
@@ -297,7 +289,7 @@ async function loadBT(id) {
   const el = $('#chartBT');
   chartBT = chartBT || echarts.init(el);
   chartBT.showLoading({ text: '', color: '#1f5eff', maskColor: 'rgba(255,255,255,.6)' });
-  const r = await fetch(`/api/backtest?id=${id}&window=${S.window}&base=${S.base}&step=${S.step}`);
+  const r = await fetch(`/api/backtest?id=${id}&window=${S.window}&base=${S.base}&step=${S.step}&model=${S.model}`);
   const d = await r.json();
   chartBT.hideLoading();
   if (d.error) {
@@ -305,18 +297,19 @@ async function loadBT(id) {
     return;
   }
   const s = d.sig, q = d.eq;
-  $('#btHint').textContent = `${d.dates[0]} 起 · ${d.times} 期 · 比年化，不比市值`;
+  const wr = o => o.budget ? (o.wealth / o.budget).toFixed(2) + '×' : '—';
+  $('#btHint').textContent = `${d.dates[0]} 起 · ${d.times} 期 · 同预算 ${wan(d.budget / d.times)}/期`;
   $('#btCards').innerHTML = `
     <div class="bt-card"><label>按信号 · 平均 ${s.multAvg}×</label>
       <b class="sig">${s.xirr == null ? '—' : s.xirr.toFixed(2) + '%'}<span style="font-size:11px;font-weight:400;color:#8c95a3"> 年化</span></b>
       <div style="font-size:11px;color:#8c95a3;line-height:1.6;margin-top:2px">
-        投入 ${wan(s.invested)} → 期末 ${wan(s.value)}<br>
-        总收益 ${pct(s.profitPct)} · 最大浮亏 ${s.maxFloatLoss.toFixed(1)}%</div></div>
+        同预算财富 <b style="color:var(--ink)">${wr(s)}</b> · 最大浮亏 ${s.maxFloatLoss.toFixed(1)}%<br>
+        实投 ${wan(s.invested)} · 存现金 ${wan(s.cash)}</div></div>
     <div class="bt-card"><label>等额定投</label>
       <b class="eq">${q.xirr == null ? '—' : q.xirr.toFixed(2) + '%'}<span style="font-size:11px;font-weight:400;color:#8c95a3"> 年化</span></b>
       <div style="font-size:11px;color:#8c95a3;line-height:1.6;margin-top:2px">
-        投入 ${wan(q.invested)} → 期末 ${wan(q.value)}<br>
-        总收益 ${pct(q.profitPct)} · 最大浮亏 ${q.maxFloatLoss.toFixed(1)}%</div></div>`;
+        同预算财富 <b style="color:var(--ink)">${wr(q)}</b> · 最大浮亏 ${q.maxFloatLoss.toFixed(1)}%<br>
+        实投 ${wan(q.invested)} · 存现金 ${wan(q.cash)}</div></div>`;
   chartBT.setOption({
     animation: false,
     grid: { left: 54, right: 12, top: 26, bottom: 24 },
@@ -382,6 +375,21 @@ function bindSeg(sel, key, cast, after) {
 bindSeg('#segWindow', 'window', Number, () => load());
 bindSeg('#segStep', 'step', Number, () => { if (curId) loadBT(curId); });
 bindSeg('#segAuto', 'auto', Number, () => setAuto());
+bindSeg('#segModel', 'model', String, () => { syncModelUI(); load(); if (curId) loadBT(curId); });
+
+function syncModelUI() {
+  const v2 = S.model === 'v2';
+  $$('#segModel button').forEach(b => b.classList.toggle('on', b.dataset.v === S.model));
+  ['#fldWindow', '#fldWval'].forEach(sel => {
+    const el = $(sel);
+    el.style.opacity = v2 ? .42 : 1;
+    el.style.pointerEvents = v2 ? 'none' : '';
+  });
+  $('#modelHint').textContent = v2
+    ? '价格位置改为「相对 200 日线的偏离分位」，创历史新高不再直接判为「贵」。'
+    : '旧版：按「价格在分位窗口内的位置」打分，长期上行的指数会被系统性判贵。';
+}
+syncModelUI();
 
 const wv = $('#wVal'), wvt = $('#wValTxt');
 wv.value = Math.round(S.wval * 100);
@@ -406,6 +414,6 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) load
 window.addEventListener('resize', () => { chartK && chartK.resize(); chartBT && chartBT.resize(); });
 
 /* ---------- 启动 ---------- */
-$('#grid').innerHTML = Array(10).fill('<div class="skeleton"></div>').join('');
+$('#grid').innerHTML = Array(11).fill('<div class="skeleton"></div>').join('');
 load();
 setAuto();

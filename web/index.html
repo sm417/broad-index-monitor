@@ -83,9 +83,12 @@
     </div>
     <div class="help-grid">
       <section>
-        <h4>温度怎么算</h4>
-        <p>位置分 ＝ 价格分位 30% ＋ 距历史高点回撤 25% ＋ 200 日线偏离 20% ＋ RSI(14) 15% ＋ 60 日动量 10%；
-          有 PE/PB 分位的标的再按估值权重（默认 30%）并入。分数越高＝越接近历史低位。</p>
+        <h4>温度怎么算（v2）</h4>
+        <p>趋势位置 28% ＋ 回撤分位 18% ＋ 短期超卖 18% ＋ 距长期趋势 18% ＋ 估值分位 18%，
+          各项都换算成「该标的自有历史中的分位」后加权。分数越高＝越接近历史低位。</p>
+        <p class="dim" style="margin-top:6px">为什么不用「价格在历史区间的分位」：长期上行的指数几乎一直处在高位，
+          那样会被系统性判贵（例如纳指在 2026 年只回撤 10%，价格仍在 5 年 90% 分位）。v2 改为衡量
+          「相对 200 日线的偏离」和「相对 10 年趋势线的偏离」，创历史新高本身不再等于贵。</p>
         <table class="kv-table">
           <tr><td>温度</td><td class="r">倍率</td><td class="r">含义</td></tr>
           <tr><td>&lt; 25</td><td class="r">2.0×</td><td class="r">加码</td></tr>
@@ -97,10 +100,14 @@
       </section>
       <section>
         <h4>数据来源</h4>
-        <p>日线行情：东方财富（含当日盘中）；纳指100 长历史：纳斯达克官网（1996 起）与东财拼接；
+        <p>日线行情：东方财富（含当日盘中）；黄金：上海金交所 AU9999 现货；纳指100 长历史：纳斯达克官网（1996 起）与东财拼接；
           PE/PB 分位：蛋卷基金（快照，缓存 30 分钟）。页面每 60 秒轮询一次。</p>
+        <h4>黄金</h4>
+        <p>没有 PE/PB，估值因子自动剔除，其余四项按 34/22/22/22 归一；卡片上的「PE 分位」换成「年内位置」。
+          它的温度和股指不能横向比较——相关性低，两边同时增额是分散，不是重复下注。</p>
         <h4>口径</h4>
-        <p>分位只描述历史位置，不是概率；回测年化用 XIRR（资金加权），不比总收益；
+        <p>分位只描述历史位置，不是概率。回测按「同预算」口径：每期预算 ＝ 基准 × 2，按倍率投出，
+          没投出的留现金（不计息），比较最终财富 —— 否则「牛市少投」会被误判为更优。
           MA 为收盘价简单移动平均，切区间只截取不重算；跨境标的还需考虑汇率与 QDII 溢价。</p>
         <h4>怎么用</h4>
         <p>温度决定这一期投多少，均线只用于确认趋势，回测用来检验信号在该标的上是否有效。</p>
@@ -117,15 +124,23 @@
     <div class="drawer-hd"><h3>参数</h3><button class="btn ghost icon" data-close>✕</button></div>
 
     <div class="field">
-      <label>分位窗口</label>
+      <label>评分模型</label>
+      <div class="seg" id="segModel">
+        <button data-v="v2" class="on">v2 趋势校准</button><button data-v="v1">v1 旧版</button>
+      </div>
+      <p class="hint" id="modelHint">价格位置改为「相对 200 日线的偏离分位」，创历史新高不再直接判为「贵」。</p>
+    </div>
+
+    <div class="field" id="fldWindow">
+      <label>分位窗口 <span class="dim">（仅 v1）</span></label>
       <div class="seg" id="segWindow">
         <button data-v="750">3年</button><button data-v="1250" class="on">5年</button>
         <button data-v="2500">10年</button><button data-v="0">全历史</button>
       </div>
     </div>
 
-    <div class="field">
-      <label>估值权重 <b id="wValTxt">30%</b></label>
+    <div class="field" id="fldWval">
+      <label>估值权重 <b id="wValTxt">30%</b> <span class="dim">（仅 v1）</span></label>
       <input type="range" id="wVal" min="0" max="60" step="5" value="30">
     </div>
 
