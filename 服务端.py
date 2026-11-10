@@ -440,6 +440,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 允许 file:// 打开的本地启动页探测服务是否在线
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -474,7 +476,10 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
 
-def free_port(start=8765):
+DEFAULT_PORT = 8766          # 优先固定端口，保证「宽基监控.url」不会失效
+
+
+def free_port(start=DEFAULT_PORT):
     for p in range(start, start + 30):
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
@@ -486,6 +491,13 @@ def main():
     port = free_port()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = "http://127.0.0.1:%d/index.html" % port
+    # 每次启动都把真实地址写回「网址.txt」，端口顺延时也不会指向旧地址
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "网址.txt"),
+                  "w", encoding="utf-8") as f:
+            f.write(url + "\n")
+    except Exception:
+        pass
     print("宽基定投温度监控已启动：%s" % url)
     print("关闭此窗口即停止服务。")
     if not os.environ.get("WB_NO_OPEN"):
