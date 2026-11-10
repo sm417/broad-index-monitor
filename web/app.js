@@ -40,11 +40,12 @@ async function load(force) {
     DATA = await r.json();
     renderSummary(DATA);
     renderGrid(DATA);
-    $('#stamp').textContent = '数据时间 ' + DATA.updated;
+    $('#stamp').textContent = '更新于 ' + DATA.updated.slice(5, 16);
     const h = (location.hash || '').replace('#', '');
     if (h && DATA.indices.some(x => x.id === h) && h !== curId) openDetail(h);
   } catch (e) {
-    $('#stamp').textContent = '连接失败 · 检查服务端是否在运行（' + e.message + '）';
+    $('#stamp').textContent = '连接失败';
+    $('#stamp').title = '检查服务端是否在运行：' + e.message;
   }
 }
 
@@ -56,7 +57,6 @@ function renderSummary(d) {
   $('#sHold').textContent = ok.length - add - cut;
   $('#sCut').textContent = cut;
   $('#sAvg').textContent = d.stats.avgScore == null ? '—' : (100 - d.stats.avgScore).toFixed(0);
-  $('#sAvg').nextElementSibling.textContent = `温度越低越该加码 · ${ok.length} 只宽基`;
 }
 
 /* ---------- 卡片 ---------- */
@@ -84,18 +84,17 @@ function renderGrid(d) {
       </div>
       <div class="gauge">
         <div class="gauge-track"><i class="gauge-pin" style="left:${Math.max(1, Math.min(99, t))}%"></i></div>
-        <div class="gauge-scale"><span>冷 · 便宜</span><span>中性</span><span>热 · 贵</span></div>
       </div>
       <div class="verdict">
-        <span class="mult">${x.mult.toFixed(1)}<span style="font-size:14px;font-weight:500">×</span></span>
+        <span class="mult">${x.mult.toFixed(1)}<span style="font-size:13px;font-weight:500">×</span></span>
         <span class="tag ${tone}">${labelOf(t)}</span>
-        <em>温度 ${t.toFixed(0)} ｜ 本期 ¥${wan(S.base * x.mult)}</em>
+        <em>本期 <b>¥${wan(S.base * x.mult)}</b></em>
       </div>
       <ul class="metrics">
-        <li><span>PE 分位</span><b class="${x.hasVal ? '' : 'na'}">${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : '无数据'}</b></li>
+        <li><span>PE 分位</span><b class="${x.hasVal ? '' : 'na'}">${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : '—'}</b></li>
         <li><span>价格分位</span><b>${(x.factors.pct.v * 100).toFixed(0)}%</b></li>
-        <li><span>距历史高</span><b>${plain(x.factors.dd.v * 100)}</b></li>
-        <li><span>距 200 日线</span><b>${plain(x.factors.ma.v * 100)}</b></li>
+        <li><span>距高点</span><b>${plain(x.factors.dd.v * 100)}</b></li>
+        <li><span>距 MA200</span><b>${plain(x.factors.ma.v * 100)}</b></li>
       </ul>
       ${sparkSVG(x.spark)}`;
     el.onclick = () => openDetail(x.id);
@@ -130,26 +129,22 @@ async function openDetail(id) {
   curId = id;
   const t = x.temp, tone = toneOf(t);
   $('#dName').textContent = x.name;
-  $('#dMeta').textContent = `${x.code} · ${x.market} · ${x.date} 收盘 · 历史 ${x.bars} 个交易日（${x.since} 起）`
-    + (x.note ? ' · ' + x.note : '');
+  $('#dMeta').textContent = `${x.code} · ${x.market} · ${x.since} 起 · ${x.bars.toLocaleString()} 个交易日`;
+  $('#dMeta').title = x.note || '';
   $('#dPrice').textContent = nf(x.price);
   $('#dChg').textContent = pct(x.chgPct, 2);
   $('#dChg').className = cls(x.chgPct);
 
   const val = x.val || {};
+  const pctOf = v => x.hasVal ? `<span style="color:var(--ink3);margin-left:3px">(${(v * 100).toFixed(0)}%)</span>` : '';
   $('#dVerdict').innerHTML = `
     <span class="big">本期建议 <span style="color:var(--accent)">${x.mult.toFixed(1)}×</span></span>
     <span class="tag ${tone}">${labelOf(t)}</span>
     <span class="sep"></span>
     <span class="kv">温度<b>${t.toFixed(0)}</b></span>
-    <span class="kv">位置分<b>${x.posScore.toFixed(0)}</b></span>
-    <span class="kv">估值分<b>${x.hasVal ? x.valScore.toFixed(0) : '无'}</b></span>
-    <span class="sep"></span>
-    <span class="kv">PE<b>${x.hasVal ? val.pe.toFixed(2) : '—'}</b></span>
-    <span class="kv">PB<b>${x.hasVal ? val.pb.toFixed(2) : '—'}</b></span>
-    <span class="kv">PE分位<b>${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : '—'}</b></span>
-    <span class="kv">PB分位<b>${x.hasVal ? (val.pbPct * 100).toFixed(0) + '%' : '—'}</b></span>
-    <span class="kv" style="margin-left:auto">按基准 ${wan(S.base)} × ${x.mult.toFixed(1)} ＝ <b>${wan(S.base * x.mult)}</b></span>`;
+    <span class="kv">PE<b>${x.hasVal ? val.pe.toFixed(2) : '—'}</b>${x.hasVal ? pctOf(val.pePct) : ''}</span>
+    <span class="kv">PB<b>${x.hasVal ? val.pb.toFixed(2) : '—'}</b>${x.hasVal ? pctOf(val.pbPct) : ''}</span>
+    <span class="kv" style="margin-left:auto">¥${wan(S.base)} × ${x.mult.toFixed(1)} ＝ <b>¥${wan(S.base * x.mult)}</b></span>`;
 
   renderFactors(x);
   $('#modal').classList.add('on');
@@ -172,15 +167,15 @@ function renderFactors(x) {
       <td>${(f.w * 100).toFixed(0)}%</td></tr>`;
   }).join('');
   if (x.hasVal) {
-    rows += `<tr><td>估值（PE ${x.val.pe.toFixed(1)} / PB ${x.val.pb.toFixed(2)}）</td>
-      <td>PE分位 ${(x.val.pePct * 100).toFixed(0)}% · PB分位 ${(x.val.pbPct * 100).toFixed(0)}%</td>
+    rows += `<tr><td>估值</td>
+      <td>PE 分位 ${(x.val.pePct * 100).toFixed(0)}% · PB 分位 ${(x.val.pbPct * 100).toFixed(0)}%</td>
       <td><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
         <div class="bar" style="width:96px"><i style="width:${x.valScore.toFixed(0)}%"></i></div>
         <span style="width:26px">${x.valScore.toFixed(0)}</span></div></td>
       <td>${(S.wval * 100).toFixed(0)}%</td></tr>`;
   }
   $('#dFactors').innerHTML = `<table>
-    <thead><tr><th>因子</th><th>当前读数</th><th>位置分（越高越便宜）</th><th>权重</th></tr></thead>
+    <thead><tr><th>因子</th><th>读数</th><th>位置分</th><th>权重</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 
@@ -199,8 +194,8 @@ function renderRangeStats(d) {
     ${cagr == null ? '' : `<span>年化 <b class="${cls(cagr)}">${pct(cagr, 2)}</b></span>`}
     <span>区间最高 <b>${nf(hi)}</b></span>
     <span>区间最低 <b>${nf(lo)}</b></span>
-    <span class="dim">${d.dates[0]} → ${d.dates[d.dates.length - 1]}（${k.length} 个交易日）</span>
-    ${d.hasVol === false ? '<span class="dim">· 该区间含纳斯达克官网历史（无成交量），已隐藏成交额</span>' : ''}`;
+    <span class="dim">${d.dates[0]} → ${d.dates[d.dates.length - 1]} · ${k.length} 日</span>
+    ${d.hasVol === false ? '<span class="dim">· 无成交额数据</span>' : ''}`;
 }
 
 async function loadK(id, range) {
@@ -351,12 +346,14 @@ async function loadBT(id) {
 function closeAll() {
   $('#modal').classList.remove('on');
   $('#drawer').classList.remove('on');
+  $('#help').classList.remove('on');
 }
 $$('[data-close]').forEach(b => b.onclick = closeAll);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
 
 $('#btnRefresh').onclick = () => load(true);
 $('#btnSettings').onclick = () => $('#drawer').classList.add('on');
+$('#btnHelp').onclick = () => $('#help').classList.add('on');
 
 $$('#ranges button').forEach(b => {
   b.classList.toggle('on', b.dataset.r === S.range);

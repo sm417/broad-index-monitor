@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>宽基定投温度监控</title>
+<title>宽基定投温度</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,34 +11,24 @@
 <header class="top">
   <div class="brand">
     <span class="dot"></span>
-    <h1>宽基定投温度监控</h1>
-    <span class="sub">位置 × 估值 → 本期该投多少</span>
+    <h1>宽基定投温度</h1>
   </div>
   <div class="tools">
     <span class="stamp" id="stamp">正在读取…</span>
-    <button class="btn ghost" id="btnRefresh" title="立即刷新">刷新</button>
-    <button class="btn ghost" id="btnSettings" title="参数">参数</button>
+    <button class="btn ghost" id="btnRefresh">刷新</button>
+    <button class="btn ghost" id="btnSettings">参数</button>
+    <button class="btn ghost icon" id="btnHelp" title="说明">?</button>
   </div>
 </header>
 
 <section class="summary">
-  <div class="stat"><label>加码 / 增额</label><b id="sAdd">–</b><i>倍率 ≥ 1.5×</i></div>
-  <div class="stat"><label>常规</label><b id="sHold">–</b><i>1.0×</i></div>
-  <div class="stat"><label>减额 / 缩量</label><b id="sCut">–</b><i>倍率 ≤ 0.5×</i></div>
-  <div class="stat"><label>平均温度</label><b id="sAvg">–</b><i>0 极冷 · 100 过热</i></div>
-  <div class="scale">
-    <div class="scale-bar"></div>
-    <div class="scale-txt"><span>0 极冷 · 加码</span><span>50 中性</span><span>100 过热 · 缩量</span></div>
-  </div>
+  <div class="stat"><label>加码 / 增额</label><b id="sAdd">–</b></div>
+  <div class="stat"><label>常规</label><b id="sHold">–</b></div>
+  <div class="stat"><label>减额 / 缩量</label><b id="sCut">–</b></div>
+  <div class="stat"><label>平均温度</label><b id="sAvg">–</b></div>
 </section>
 
 <main class="grid" id="grid"></main>
-
-<footer class="foot">
-  <p><b>温度分</b>＝价格分位 30% ＋ 距历史高点回撤 25% ＋ 200日线偏离 20% ＋ RSI 15% ＋ 60日动量 10%；有 PE/PB 分位的标的再按估值权重（默认 30%）合成。分数越高＝越接近历史低位。</p>
-  <p><b>数据</b>：日线行情 东方财富（含当日盘中），PE/PB 分位 蛋卷基金（快照，30 分钟缓存）。行情每逢整点间自动刷新，页面每 60 秒轮询一次。</p>
-  <p class="warn">本页面为纪律参考工具，不构成投资建议。分位与回测均基于历史价格，历史不代表未来；跨境标的还需考虑汇率、QDII 溢价与额度。</p>
-</footer>
 
 <!-- 详情 -->
 <div class="modal" id="modal" aria-hidden="true">
@@ -73,13 +63,50 @@
       </div>
 
       <div class="panel">
-        <div class="panel-hd"><h4>定投回测 · 按信号 vs 等额</h4><span class="hint" id="btHint"></span></div>
+        <div class="panel-hd"><h4>定投回测 · 信号 vs 等额</h4><span class="hint" id="btHint"></span></div>
         <div class="bt-cards" id="btCards"></div>
         <div class="chart sm" id="chartBT"></div>
       </div>
     </div>
 
     <div class="factors" id="dFactors"></div>
+  </div>
+</div>
+
+<!-- 说明 -->
+<div class="modal" id="help" aria-hidden="true">
+  <div class="modal-mask" data-close></div>
+  <div class="sheet help">
+    <div class="sheet-hd">
+      <h2>说明</h2>
+      <button class="btn ghost icon" data-close>✕</button>
+    </div>
+    <div class="help-grid">
+      <section>
+        <h4>温度怎么算</h4>
+        <p>位置分 ＝ 价格分位 30% ＋ 距历史高点回撤 25% ＋ 200 日线偏离 20% ＋ RSI(14) 15% ＋ 60 日动量 10%；
+          有 PE/PB 分位的标的再按估值权重（默认 30%）并入。分数越高＝越接近历史低位。</p>
+        <table class="kv-table">
+          <tr><td>温度</td><td class="r">倍率</td><td class="r">含义</td></tr>
+          <tr><td>&lt; 25</td><td class="r">2.0×</td><td class="r">加码</td></tr>
+          <tr><td>25 – 40</td><td class="r">1.5×</td><td class="r">增额</td></tr>
+          <tr><td>40 – 65</td><td class="r">1.0×</td><td class="r">常规</td></tr>
+          <tr><td>65 – 80</td><td class="r">0.5×</td><td class="r">减额</td></tr>
+          <tr><td>&ge; 80</td><td class="r">0.3×</td><td class="r">缩量</td></tr>
+        </table>
+      </section>
+      <section>
+        <h4>数据来源</h4>
+        <p>日线行情：东方财富（含当日盘中）；纳指100 长历史：纳斯达克官网（1996 起）与东财拼接；
+          PE/PB 分位：蛋卷基金（快照，缓存 30 分钟）。页面每 60 秒轮询一次。</p>
+        <h4>口径</h4>
+        <p>分位只描述历史位置，不是概率；回测年化用 XIRR（资金加权），不比总收益；
+          MA 为收盘价简单移动平均，切区间只截取不重算；跨境标的还需考虑汇率与 QDII 溢价。</p>
+        <h4>怎么用</h4>
+        <p>温度决定这一期投多少，均线只用于确认趋势，回测用来检验信号在该标的上是否有效。</p>
+      </section>
+    </div>
+    <p class="disclaim">纪律参考工具，不构成投资建议。历史不代表未来。</p>
   </div>
 </div>
 
@@ -95,19 +122,16 @@
         <button data-v="750">3年</button><button data-v="1250" class="on">5年</button>
         <button data-v="2500">10年</button><button data-v="0">全历史</button>
       </div>
-      <p class="tip">用于算「价格分位」。窗口越短越敏感，越长越稳。</p>
     </div>
 
     <div class="field">
       <label>估值权重 <b id="wValTxt">30%</b></label>
       <input type="range" id="wVal" min="0" max="60" step="5" value="30">
-      <p class="tip">0% ＝ 纯位置策略（与回测口径一致）。无 PE/PB 数据的标的自动取纯位置分。</p>
     </div>
 
     <div class="field">
-      <label>每期基准金额（元）</label>
+      <label>每期基准金额</label>
       <input type="number" id="baseAmt" value="1000" min="100" step="100">
-      <p class="tip">回测与「本期建议投入」都按此金额 × 倍率计算。</p>
     </div>
 
     <div class="field">
