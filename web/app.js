@@ -3,9 +3,10 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const S = Object.assign(
-  { window: 1250, wval: 0.3, base: 1000, step: 21, auto: 60, range: '5y' },
+  { v: 2, window: 1250, wval: 0.3, base: 1000, step: 21, auto: 60, range: '5y' },
   JSON.parse(localStorage.getItem('wbcfg') || '{}')
 );
+if (S.v !== 2) { S.v = 2; S.range = '5y'; }
 if (!['1y', '3y', '5y', '10y', 'all'].includes(S.range)) S.range = '5y';
 const save = () => localStorage.setItem('wbcfg', JSON.stringify(S));
 
@@ -18,7 +19,7 @@ let chartK = null, chartBT = null;
 const nf = (n, d = 2) => (n == null || isNaN(n)) ? '—'
   : n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d });
 const pct = (n, d = 1) => (n == null || isNaN(n)) ? '—' : (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
-const plain = (n, d = 1) => (n == null || isNaN(n)) ? '—' : n.toFixed(d) + '%';
+const plain = (n, d = 1) => (n == null || isNaN(n)) ? '—' : (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
 const wan = n => {
   if (n == null) return '—';
   if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿';
@@ -88,7 +89,7 @@ function renderGrid(d) {
       <div class="verdict">
         <span class="mult">${x.mult.toFixed(1)}<span style="font-size:14px;font-weight:500">×</span></span>
         <span class="tag ${tone}">${labelOf(t)}</span>
-        <em>温度 ${t.toFixed(0)}</em>
+        <em>温度 ${t.toFixed(0)} ｜ 本期 ¥${wan(S.base * x.mult)}</em>
       </div>
       <ul class="metrics">
         <li><span>PE 分位</span><b class="${x.hasVal ? '' : 'na'}">${x.hasVal ? (val.pePct * 100).toFixed(0) + '%' : '无数据'}</b></li>
@@ -183,6 +184,24 @@ function renderFactors(x) {
     <tbody>${rows}</tbody></table>`;
 }
 
+function renderRangeStats(d) {
+  const k = d.k || [];
+  if (!k.length) { $('#rangeStats').innerHTML = ''; return; }
+  const first = k[0][1], last = k[k.length - 1][1];
+  const chg = (last / first - 1) * 100;
+  const hi = Math.max(...k.map(x => x[3]));
+  const lo = Math.min(...k.map(x => x[2]));
+  const spanDays = (new Date(d.dates[d.dates.length - 1]) - new Date(d.dates[0])) / 86400000;
+  const yrs = spanDays / 365.25;
+  const cagr = yrs > 0.6 ? (Math.pow(last / first, 1 / yrs) - 1) * 100 : null;
+  $('#rangeStats').innerHTML = `
+    <span class="chg ${cls(chg)}">区间 ${pct(chg, 2)}</span>
+    ${cagr == null ? '' : `<span>年化 <b class="${cls(cagr)}">${pct(cagr, 2)}</b></span>`}
+    <span>区间最高 <b>${nf(hi)}</b></span>
+    <span>区间最低 <b>${nf(lo)}</b></span>
+    <span class="dim">${d.dates[0]} → ${d.dates[d.dates.length - 1]}（${k.length} 个交易日）</span>`;
+}
+
 async function loadK(id, range) {
   const el = $('#chartK');
   chartK = chartK || echarts.init(el);
@@ -190,6 +209,7 @@ async function loadK(id, range) {
   const r = await fetch(`/api/kline?id=${id}&range=${range}`);
   const d = await r.json();
   chartK.hideLoading();
+  renderRangeStats(d);
   const axis = {
     type: 'category', data: d.dates, boundaryGap: false,
     axisLine: { lineStyle: { color: '#e6e9ef' } },
@@ -240,19 +260,21 @@ async function loadBT(id) {
     return;
   }
   const s = d.sig, q = d.eq;
-  $('#btHint').textContent = `${d.dates[0]} 起 · ${d.times} 期`;
+  $('#btHint').textContent = `${d.dates[0]} 起 · ${d.times} 期 · 比年化，不比市值`;
   $('#btCards').innerHTML = `
-    <div class="bt-card"><label>按信号（平均 ${s.multAvg}×）</label>
-      <b class="sig">${pct(s.profitPct)}</b>
-      <div style="font-size:11px;color:#8c95a3;margin-top:2px">
-        投入 ${wan(s.invested)} · 期末 ${wan(s.value)}<br>年化 ${s.xirr == null ? '—' : s.xirr.toFixed(1) + '%'} · 最大浮亏 ${s.maxFloatLoss.toFixed(1)}%</div></div>
+    <div class="bt-card"><label>按信号 · 平均 ${s.multAvg}×</label>
+      <b class="sig">${s.xirr == null ? '—' : s.xirr.toFixed(2) + '%'}<span style="font-size:11px;font-weight:400;color:#8c95a3"> 年化</span></b>
+      <div style="font-size:11px;color:#8c95a3;line-height:1.6;margin-top:2px">
+        投入 ${wan(s.invested)} → 期末 ${wan(s.value)}<br>
+        总收益 ${pct(s.profitPct)} · 最大浮亏 ${s.maxFloatLoss.toFixed(1)}%</div></div>
     <div class="bt-card"><label>等额定投</label>
-      <b class="eq">${pct(q.profitPct)}</b>
-      <div style="font-size:11px;color:#8c95a3;margin-top:2px">
-        投入 ${wan(q.invested)} · 期末 ${wan(q.value)}<br>年化 — · 最大浮亏 ${q.maxFloatLoss.toFixed(1)}%</div></div>`;
+      <b class="eq">${q.xirr == null ? '—' : q.xirr.toFixed(2) + '%'}<span style="font-size:11px;font-weight:400;color:#8c95a3"> 年化</span></b>
+      <div style="font-size:11px;color:#8c95a3;line-height:1.6;margin-top:2px">
+        投入 ${wan(q.invested)} → 期末 ${wan(q.value)}<br>
+        总收益 ${pct(q.profitPct)} · 最大浮亏 ${q.maxFloatLoss.toFixed(1)}%</div></div>`;
   chartBT.setOption({
     animation: false,
-    grid: { left: 54, right: 12, top: 16, bottom: 24 },
+    grid: { left: 54, right: 12, top: 26, bottom: 24 },
     tooltip: {
       trigger: 'axis', backgroundColor: 'rgba(255,255,255,.96)', borderColor: '#e6e9ef',
       textStyle: { color: '#14181f', fontSize: 12 },

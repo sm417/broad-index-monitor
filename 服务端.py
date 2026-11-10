@@ -169,22 +169,21 @@ def pos_factors(closes, i, window):
     return score, f
 
 
-BANDS = [(80, 2.0, "加码", "ice"), (65, 1.5, "增额", "cool"),
-         (40, 1.0, "常规", "mid"), (25, 0.5, "减额", "warm"), (-1, 0.3, "缩量", "hot")]
+# 倍率档位：一律按「温度」（0 冷 = 便宜，100 热 = 贵）切分，前后端同一口径
+BANDS = [(80, 0.3, "缩量", "hot"), (65, 0.5, "减额", "warm"),
+         (40, 1.0, "常规", "mid"), (25, 1.5, "增额", "cool"), (-1, 2.0, "加码", "ice")]
 
 
-def multiplier(score):
+def band_from_temp(t):
     for lo, mult, label, tone in BANDS:
-        if score >= lo:
-            return mult, label, tone
-    return 1.0, "常规", "mid"
+        if t >= lo:
+            return dict(mult=mult, label=label, tone=tone)
+    return dict(mult=1.0, label="常规", tone="mid")
 
 
 def band_of(score):
-    for lo, mult, label, tone in BANDS:
-        if score >= lo:
-            return dict(mult=mult, label=label, tone=tone)
-    return dict(mult=1.0, label="常规", tone="mid")
+    """score 越高越便宜 → 温度 = 100 - score"""
+    return band_from_temp(100 - score)
 
 
 # ---------------------------------------------------------------- 快照
@@ -282,7 +281,7 @@ def backtest(ix, window=1250, base=1000, step=21):
     t_dates, t_mult, inv_sig, inv_eq, val_sig, val_eq = [], [], [], [], [], []
     units_s, units_e = 0.0, 0.0
     cum_s, cum_e = 0.0, 0.0
-    flows_s = []
+    flows_s, flows_e = [], []
 
     i = start
     while i < len(closes):
@@ -295,6 +294,7 @@ def backtest(ix, window=1250, base=1000, step=21):
         units_s += a_s / px
         units_e += a_e / px
         flows_s.append((dates[i], -a_s))
+        flows_e.append((dates[i], -a_e))
         t_dates.append(rows[i]["d"])
         t_mult.append(mult)
         inv_sig.append(round(cum_s, 2))
@@ -307,6 +307,7 @@ def backtest(ix, window=1250, base=1000, step=21):
         return dict(error="样本不足")
 
     flows_s.append((dates[-1], units_s * closes[-1]))
+    flows_e.append((dates[-1], units_e * closes[-1]))
     m_s = dict(
         invested=round(cum_s, 2), value=round(units_s * closes[-1], 2),
         profitPct=round((units_s * closes[-1] / cum_s - 1) * 100, 2),
@@ -321,7 +322,9 @@ def backtest(ix, window=1250, base=1000, step=21):
     )
     r = xirr(flows_s)
     m_s["xirr"] = None if r is None else round(r * 100, 2)
-    flows_e = [(dates[start], 0)]
+    r2 = xirr(flows_e)
+    m_e["xirr"] = None if r2 is None else round(r2 * 100, 2)
+    m_e["multAvg"] = 1.0
     return dict(
         dates=t_dates, mult=t_mult,
         invested=inv_sig, value=val_sig, investedEq=inv_eq, valueEq=val_eq,
