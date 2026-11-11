@@ -651,7 +651,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
 
-DEFAULT_PORT = 8766          # 优先固定端口，保证「宽基监控.url」不会失效
+DEFAULT_PORT = 8766          # 优先固定端口，保证收藏的地址不会失效
 
 
 def free_port(start=DEFAULT_PORT):

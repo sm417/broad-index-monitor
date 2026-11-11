@@ -1,0 +1,16 @@
+# 统一换行：仓库内一律按 LF 存储，检出时由 git 按平台转换
+* text=auto
+
+# 明确的文本类型
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.bat   text eol=crlf
+
+# 二进制，不做换行转换
+*.png   binary
+*.jpg   binary
+*.ico   binary
